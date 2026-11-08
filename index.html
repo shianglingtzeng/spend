@@ -188,6 +188,16 @@ input,select,textarea{background:var(--surface-2)!important}
 .rate{display:inline-block;padding:2px 8px;border-radius:999px;font-weight:600}
 .partial{font-size:10px;color:var(--muted);font-weight:400;display:block}
 .journey svg{width:100%;height:auto;display:block}
+.jtop{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.jtop li{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:8px;align-items:center;font-size:13px}
+.jtop .bd{width:20px;height:20px;border-radius:50%;background:var(--accent);color:var(--surface);font-size:11px;font-weight:600;display:grid;place-items:center}
+.jtop .nm{min-width:0;overflow-wrap:anywhere}.jtop .nm small{color:var(--muted);margin-left:6px}
+.savings .big{font-size:34px;font-weight:600;color:var(--accent)}
+.savings svg{width:100%;height:auto;display:block}
+.srow{display:grid;grid-template-columns:5.5em minmax(0,1fr) minmax(0,1fr);gap:8px;font-size:13px;padding:7px 0;border-bottom:1px solid var(--line)}
+.srow span:not(:first-child){text-align:right}.srow.h{color:var(--muted);font-size:11px;border-bottom:0;padding-bottom:0}
+.chk{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink)}
+.chk input{width:18px;height:18px;margin:0;accent-color:var(--accent)}
 /* DAWHO sheet */
 .sheet{background:var(--surface);border-radius:22px;box-shadow:0 -6px 30px rgba(20,30,45,.10),var(--sh1);padding:12px 20px 18px}
 .sheet .grab{width:40px;height:5px;border-radius:3px;background:var(--line);margin:0 auto 10px}
@@ -268,8 +278,9 @@ code{font-family:var(--f-num);font-size:12px;background:var(--accent-soft);paddi
     <div class="cohort" id="cohort"></div>
     <div class="journey" id="journeyWrap" hidden>
       <h2 style="margin:8px 0 6px">消費旅程</h2>
-      <svg id="journey" viewBox="0 0 360 140" role="img" aria-label="每日花費"></svg>
-      <p class="note">點越大，那天花越多；標出花最多的三天。</p>
+      <svg id="journey" viewBox="0 0 360 132" role="img" aria-label="每日花費"></svg>
+      <ol class="jtop" id="jtop"></ol>
+      <p class="note">點越大，那天花越多；編號是花最多的三天。</p>
     </div>
     <p class="note" id="bNote"></p>
   </section>
@@ -401,6 +412,30 @@ code{font-family:var(--f-num);font-size:12px;background:var(--accent-soft);paddi
     </div>
     <div id="impMsg"></div>
     <div id="clearBox" class="confirm"><button class="ghost" id="clearAsk">清除所有資料</button></div>
+  </section>
+  <section class="band savings" aria-label="目前存了多少">
+    <h2>目前存了多少</h2>
+    <div class="total"><span class="big num" id="savBig">—</span><span class="try num" id="savTwd"></span></div>
+    <svg id="savChart" viewBox="0 0 360 120" role="img" aria-label="累計存款走勢"></svg>
+    <div id="savRows"></div>
+    <div class="row">
+      <label class="f">從哪個月開始算<select id="savStart"></select></label>
+      <label class="f">外派前已有存款（US$）<input id="savBase" type="number" inputmode="decimal" placeholder="0"></label>
+    </div>
+    <label class="chk"><input type="checkbox" id="savCur"> 本月收入已經入帳</label>
+    <details class="imp" id="ovBox" style="box-shadow:none;background:var(--surface-2)">
+      <summary><b>某個月收入不一樣？</b><span class="st">例如到任當月</span></summary>
+      <div class="imp-body">
+        <div class="row">
+          <label class="f">月份<select id="ovMonth"></select></label>
+          <label class="f">那個月實際領到 US$<input id="ovUsd" type="number" inputmode="decimal" placeholder="0"></label>
+          <label class="f">那個月實際領到 NT$<input id="ovTwd" type="number" inputmode="decimal" placeholder="0"></label>
+        </div>
+        <div class="row"><button class="btn" id="ovSave">儲存</button><button class="ghost" id="ovClear">改回每月固定收入</button></div>
+        <p class="note" id="ovNote"></p>
+      </div>
+    </details>
+    <p class="note">估算方式：每個月的收入 − 固定支出 − 生活花費，一個月一個月累加。沒有算投資收益和換匯價差，跟銀行實際餘額可能有落差。</p>
   </section>
 </div>
 
@@ -539,10 +574,15 @@ const BKEYS={incUsd:"IncUsd",incTwd:"IncTwd",fixUsd:"FixUsd"};
 function B(){if(!S.budget)S.budget={incUsd:[],incTwd:[],fixUsd:[],usdTwd:32.6};return S.budget;}
 const fmtU=n=>(n<0?"−":"")+"US$"+Math.abs(Math.round(n)).toLocaleString("en-US");
 const sumOf=a=>a.reduce((x,i)=>x+(+i.amt||0),0);
+function allMonths(){const set=new Set();[...S.stmt,...S.apple,...S.cash].forEach(r=>r.date&&set.add(r.date.slice(0,7)));return [...set].sort();}
+// 某個月實際收入和平常不同（例如到任當月），用 incOverride 覆蓋
+function monthInc(m){const b=B(),r=+b.usdTwd||32.6,o=(b.incOverride||{})[m];
+  return o?(+o.usd||0)+(+o.twd||0)/r:sumOf(b.incUsd)+sumOf(b.incTwd)/r;}
 function periodStats(m,n){
   const keep=month;month=m;const C=compute();month=keep;
   const b=B(),r=+b.usdTwd||32.6,k=n||1;
-  const inc=(sumOf(b.incUsd)+sumOf(b.incTwd)/r)*k,fix=sumOf(b.fixUsd)*k,sp=C.total/r;
+  const inc=m==="all"?allMonths().reduce((s,x)=>s+monthInc(x),0):monthInc(m);
+  const fix=sumOf(b.fixUsd)*k,sp=C.total/r;
   return{inc,fix,sp,save:inc-fix-sp,r,C};
 }
 const mLabel=m=>+m.slice(5)+" 月";
@@ -600,11 +640,13 @@ function renderJourney(){
   let h=`<line x1="18" y1="90" x2="342" y2="90" style="stroke:var(--line)" stroke-width="2"/>`;
   [1,8,15,22,days].forEach(d=>h+=`<text x="${X(d)}" y="124" font-size="10" text-anchor="middle" style="fill:var(--muted)">${mo}/${d}</text>`);
   Object.entries(byDay).forEach(([d,v])=>h+=`<circle cx="${X(+d)}" cy="90" r="${3+Math.sqrt(v/mx)*13}" style="fill:var(--spend);fill-opacity:.45;stroke:var(--spend)"/>`);
-  const top=Object.entries(byDay).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([d])=>+d).sort((a,b)=>a-b);
-  top.forEach((d,i)=>{const rs=rows.filter(r=>+r.date.slice(8)===d).sort((a,b)=>b.twd-a.twd);
-    const nm=merchant(rs[0].desc).replace(/^[^/]{1,6}\//,"").replace(/ (ISTANBUL|ANKARA|IST|GALATAPORT).*$/,"").replace(/[*].*$/,"").replace(/ Inc.*$/,"").slice(0,12)+(rs.length>1?` 等${rs.length}筆`:"");
-    const yy=i%2?44:20,tx=Math.min(300,Math.max(56,X(d)));
-    h+=`<line x1="${X(d)}" y1="${yy+16}" x2="${X(d)}" y2="74" style="stroke:var(--muted)" stroke-dasharray="2 2"/><text x="${tx}" y="${yy}" font-size="10" text-anchor="middle" style="fill:var(--ink)">${esc(nm)}</text><text x="${tx}" y="${yy+12}" font-size="10" text-anchor="middle" style="fill:var(--muted);font-family:var(--f-num)">${mo}/${d} · NT$${byDay[d].toLocaleString("en-US")}</text>`;});
+  const ranked=Object.entries(byDay).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([d],i)=>({d:+d,rank:i+1}));
+  const nice=t=>t.normalize("NFKC").replace(/^[^/]{1,6}\//,"").replace(/ (ISTANBUL|ANKARA|IST|GALATAPORT).*$/,"").replace(/[*].*$/,"").replace(/ Inc.*$/,"").replace(/^TOK-/,"").trim();
+  // badges sit on three heights by date order, so neighbouring days never collide
+  [...ranked].sort((a,b)=>a.d-b.d).forEach((o,i)=>{const yy=18+i*18,x=X(o.d);
+    h+=`<line x1="${x}" y1="${yy+8}" x2="${x}" y2="${90-3-Math.sqrt(byDay[o.d]/mx)*13}" style="stroke:var(--muted)" stroke-dasharray="2 2"/><circle cx="${x}" cy="${yy}" r="8" style="fill:var(--accent)"/><text x="${x}" y="${yy+3.5}" font-size="10" font-weight="600" text-anchor="middle" style="fill:var(--surface)">${o.rank}</text>`;});
+  $("jtop").innerHTML=ranked.map(o=>{const rs=rows.filter(r=>+r.date.slice(8)===o.d).sort((a,b)=>b.twd-a.twd);
+    return `<li><span class="bd">${o.rank}</span><span class="nm">${esc(nice(merchant(rs[0].desc)))}${rs.length>1?`<small>等 ${rs.length} 筆</small>`:""}</span><span class="num">${mo}/${o.d} · ${fmtT(byDay[o.d])}</span></li>`;}).join("");
   $("journey").innerHTML=h;
 }
 document.addEventListener("click",e=>{
@@ -640,6 +682,37 @@ function renderDawho(){
     +(last?` 資料只算到 ${md(last)}，之後的消費要匯入截圖才會更新。`:" 還沒有永豐卡資料。");
 }
 
+/* ---------- 累計存款 ---------- */
+function renderSavings(ms){
+  const b=B(),has=b.incUsd.length||b.incTwd.length;
+  const cur=new Date().toISOString().slice(0,7);
+  if(!ms.length||!has){$("savBig").textContent="—";$("savTwd").textContent="先填入每月收入";$("savChart").innerHTML="";$("savRows").innerHTML="";return;}
+  const start=b.savStart&&ms.includes(b.savStart)?b.savStart:ms[0];
+  const curIn=b.savCur!==false,base=+b.savBase||0;
+  $("savStart").innerHTML=ms.map(m=>`<option value="${m}"${m===start?" selected":""}>${m.slice(0,4)} 年 ${+m.slice(5)} 月</option>`).join("");
+  if(document.activeElement!==$("savBase"))$("savBase").value=b.savBase||"";
+  $("savCur").checked=curIn;
+  const ovm=$("ovMonth").value||start;
+  $("ovMonth").innerHTML=ms.map(m=>`<option value="${m}"${m===ovm?" selected":""}>${m.slice(0,4)} 年 ${+m.slice(5)} 月</option>`).join("");
+  const ov=(b.incOverride||{})[$("ovMonth").value];
+  if(!["ovUsd","ovTwd"].includes(document.activeElement&&document.activeElement.id)){$("ovUsd").value=ov?ov.usd:"";$("ovTwd").value=ov?ov.twd:"";}
+  $("ovNote").textContent=ov?`這個月用實際收入計算：約 ${fmtU(monthInc($("ovMonth").value))}。`:`這個月目前用每月固定收入計算：約 ${fmtU(monthInc($("ovMonth").value))}。`;
+  let cum=base;const pts=[],r=+b.usdTwd||32.6;
+  for(const m of ms.filter(m=>m>=start)){const x=periodStats(m);const inc=(m===cur&&!curIn)?0:x.inc;const sv=inc-x.fix-x.sp;cum+=sv;pts.push({m,sv,cum});}
+  $("savBig").textContent=fmtU(cum);$("savTwd").textContent="約 "+fmtT(cum*r);
+  const W=360,H=120,L=14,Rr=14,T=14,Bt=24,vals=[base,...pts.map(p=>p.cum)],mn=Math.min(0,...vals),mx2=Math.max(1,...vals);
+  const X=i=>L+i*((W-L-Rr)/Math.max(1,vals.length-1)),Y=v=>T+(1-(v-mn)/(mx2-mn))*(H-T-Bt);
+  const line=vals.map((v,i)=>`${X(i)},${Y(v)}`).join(" ");
+  let g=`<line x1="${L}" y1="${Y(0)}" x2="${W-Rr}" y2="${Y(0)}" style="stroke:var(--line)"/>`;
+  g+=`<polygon points="${X(0)},${Y(mn)} ${line} ${X(vals.length-1)},${Y(mn)}" style="fill:var(--accent-soft)"/><polyline points="${line}" style="fill:none;stroke:var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>`;
+  vals.forEach((v,i)=>{const last=i===vals.length-1;g+=`<circle cx="${X(i)}" cy="${Y(v)}" r="${last?5:3}" style="fill:${last?"var(--accent)":"var(--surface)"};stroke:var(--accent)" stroke-width="2"/>`;
+    g+=`<text x="${X(i)}" y="${H-6}" font-size="10" text-anchor="${i===0?"start":last?"end":"middle"}" style="fill:var(--muted)">${i===0?"起點":+pts[i-1].m.slice(5)+"月"}</text>`;});
+  $("savChart").innerHTML=g;
+  $("savRows").innerHTML=`<div class="srow h"><span>月份</span><span>當月存下</span><span>累計</span></div>`+
+    (base?`<div class="srow"><span>外派前</span><span class="num">—</span><span class="num">${fmtU(base)}</span></div>`:"")+
+    pts.map(p=>`<div class="srow"><span>${+p.m.slice(5)} 月${p.m===cur&&!curIn?"（未含薪水）":""}${(b.incOverride||{})[p.m]?"<small style=\"display:block;color:var(--muted);font-size:10px\">收入已調整</small>":""}</span><span class="num">${fmtU(p.sv)}</span><span class="num">${fmtU(p.cum)}</span></div>`).join("");
+}
+
 /* ---------- 畫面 ---------- */
 function render(){
   const set=new Set();[...S.stmt,...S.apple,...S.cash].forEach(r=>r.date&&set.add(r.date.slice(0,7)));
@@ -647,6 +720,7 @@ function render(){
   $("months").innerHTML=[["all","全部"],...ms.map(m=>[m,+m.slice(5)+"月"])].map(([v,l])=>`<button class="chip" data-m="${v}" aria-pressed="${v===month}">${l}</button>`).join("");
   const C=compute();
   renderMoney(C,ms);
+  renderSavings(ms);
   renderDawho();
   $("tTwd").textContent=fmtT(C.total);
   $("tTry").textContent=C.totalL?"約 "+fmtL(C.totalL):"";
@@ -1070,6 +1144,13 @@ $("signIn").addEventListener("click",async()=>{
   catch(e){setSync("off",`登入失敗（${(e&&e.code)||"unknown"}）`+(e&&e.code==="auth/unauthorized-domain"?"：請在 Firebase 驗證設定加入這個網域":""));}
 });
 $("signOut").addEventListener("click",()=>firebase.auth().signOut());
+$("savStart").addEventListener("change",()=>{B().savStart=$("savStart").value;save("meta");render();});
+$("savBase").addEventListener("change",()=>{const v=parseFloat($("savBase").value);B().savBase=isFinite(v)?v:0;save("meta");render();});
+$("savCur").addEventListener("change",()=>{B().savCur=$("savCur").checked;save("meta");render();});
+$("ovMonth").addEventListener("change",()=>{$("ovUsd").value="";$("ovTwd").value="";render();});
+$("ovSave").addEventListener("click",()=>{const b=B();b.incOverride=b.incOverride||{};
+  b.incOverride[$("ovMonth").value]={usd:parseFloat($("ovUsd").value)||0,twd:parseFloat($("ovTwd").value)||0};save("meta");render();});
+$("ovClear").addEventListener("click",()=>{const b=B();if(b.incOverride)delete b.incOverride[$("ovMonth").value];$("ovUsd").value="";$("ovTwd").value="";save("meta");render();});
 render();
 connect();
 })();
