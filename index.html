@@ -90,6 +90,10 @@ button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visi
 .item select{padding:1px 4px;font-size:12px;border-radius:6px}
 .edbtn{border:0;background:none;color:var(--muted);font:inherit;font-size:12px;text-decoration:underline;cursor:pointer;padding:0 2px}
 .edbtn:hover{color:var(--accent)}
+.edbtn.on{color:var(--warn);font-weight:600}
+.chk{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink);cursor:pointer}
+.chk input{width:18px;height:18px;margin:0}
+.adv-note{background:var(--warn-soft);color:var(--ink);padding:8px 10px;border-radius:8px}
 .edrow{grid-column:1/-1;display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:var(--accent-soft);border-radius:8px;padding:8px;margin-top:6px}
 .edrow input{padding:4px 8px;font-size:13px}
 .edrow button{padding:4px 10px;font-size:12px}
@@ -308,6 +312,7 @@ code{font-family:var(--f-num);font-size:12px;background:var(--accent-soft);paddi
       <div><div class="k">現金・手動記</div><div class="v num" id="sCash">—</div></div>
     </div>
     <p class="note" id="rateNote"></p>
+    <p class="note adv-note" id="advNote" hidden></p>
   </section>
 
   <section aria-label="明細">
@@ -315,6 +320,7 @@ code{font-family:var(--f-num);font-size:12px;background:var(--accent-soft);paddi
       <button class="tab" role="tab" data-t="recon" aria-selected="true">現金支出</button>
       <button class="tab" role="tab" data-t="cat" aria-selected="false">分類明細</button>
       <button class="tab" role="tab" data-t="all" aria-selected="false">信用卡明細</button>
+      <button class="tab" role="tab" data-t="adv" aria-selected="false">代墊</button>
     </div>
     <div id="view"></div>
   </section>
@@ -418,6 +424,7 @@ code{font-family:var(--f-num);font-size:12px;background:var(--accent-soft);paddi
           <label class="f">項目<input type="text" id="xNote" placeholder="例：市場水果"></label>
           <label class="f">類別<select id="xCat"></select></label>
         </div>
+        <label class="chk"><input type="checkbox" id="xAdv"> 這筆是代墊（公司之後會還我）</label>
         <div class="row"><button class="btn" id="xAdd">新增一筆</button></div>
         <div class="list" id="spendList"></div>
         <p class="note">以換匯的實際成本換算台幣（付出的美金 × 美金匯率 ÷ 換到的里拉）；還沒有換匯紀錄時用刷卡匯率。</p>
@@ -485,12 +492,12 @@ function autoCat(desc){const d=(desc||"").toUpperCase();for(const [re,c] of RULE
 
 /* ---------- 狀態與儲存 ---------- */
 // 資料存在 Firebase Firestore（users/<你的帳號>/ledger/...），手機和電腦都看得到；瀏覽器只留快取
-const empty=()=>({stmt:[],batches:{},apple:[],cash:[],cashSpend:[],cats:{},budget:null,logFix:{}});
+const empty=()=>({stmt:[],batches:{},apple:[],cash:[],cashSpend:[],cats:{},budget:null,logFix:{},adv:{}});
 let S=empty();
 try{const j=JSON.parse(localStorage.getItem(LKEY)||"null");if(j&&j.stmt)S=Object.assign(empty(),j);}catch(e){}
 let db=null;
 function cacheLocal(){try{localStorage.setItem(LKEY,JSON.stringify(S));}catch(e){}}
-const DOCS={card:()=>({rows:S.stmt,batches:S.batches}),log:()=>({rows:S.apple}),cash:()=>({rows:S.cash,spend:S.cashSpend||[]}),meta:()=>({cats:S.cats,budget:S.budget,logFix:S.logFix||{}})};
+const DOCS={card:()=>({rows:S.stmt,batches:S.batches}),log:()=>({rows:S.apple}),cash:()=>({rows:S.cash,spend:S.cashSpend||[]}),meta:()=>({cats:S.cats,budget:S.budget,logFix:S.logFix||{},adv:S.adv||{}})};
 let saving=Promise.resolve({ok:true}),dirty=false;
 // 回傳 {ok, code}：讓按鈕可以把同步失敗的原因顯示出來
 function save(...kinds){
@@ -531,7 +538,7 @@ async function loadFrom(d){
     const [c,l,ca,m]=snaps.map(x=>x.exists?JSON.parse(JSON.stringify(x.data())):null);
     if(dirty){save("card","log","cash","meta");}
     else if(c||l||ca||m){
-      S={stmt:(c&&c.rows)||[],batches:(c&&c.batches)||{},apple:(l&&l.rows)||[],cash:(ca&&ca.rows)||[],cashSpend:(ca&&ca.spend)||[],cats:(m&&m.cats)||{},budget:(m&&m.budget)||null,logFix:(m&&m.logFix)||{}};
+      S={stmt:(c&&c.rows)||[],batches:(c&&c.batches)||{},apple:(l&&l.rows)||[],cash:(ca&&ca.rows)||[],cashSpend:(ca&&ca.spend)||[],cats:(m&&m.cats)||{},budget:(m&&m.budget)||null,logFix:(m&&m.logFix)||{},adv:(m&&m.adv)||{}};
       if(fixLogDates()+applyLogFix())save("log");
       if(fixStmtDates())save("card");
       cacheLocal();setSync("on","已同步到 Firebase，手機和電腦都看得到");render();
@@ -587,17 +594,30 @@ function reconcile(){
 function usdRate(){return +(S.budget&&S.budget.usdTwd)||32.6;}
 function exTwd(c){return c.usd!=null?c.usd*usdRate():(c.twd!=null?c.twd:null);}
 function cashRate(){let t=0,l=0;for(const c of S.cash){const w=exTwd(c);if(w!=null&&c.try>0){t+=w;l+=c.try;}}return l?t/l:rate();}
+/* ---------- 代墊：公司之後會還的錢，不算自己的花費 ----------
+   key：信用卡 s:id、手動現金 x:id、記帳表 a:原始日期|金額|備註（重新匯入記帳表也認得） */
+function advKey(src,r){return src==="a"?"a:"+[r.orig||r.date,r.amount,r.merchant||""].join("|"):src+":"+r.id;}
+function advOf(src,r){return (S.adv||{})[advKey(src,r)]||null;}
+function advList(){
+  const cr=cashRate(),out=[];
+  for(const r of S.stmt){const a=advOf("s",r);if(a)out.push({src:"s",r,a,date:r.date,name:merchant(r.desc),twd:r.twd,amt:fmtT(r.twd),how:r.card||"信用卡"});}
+  for(const r of S.apple){const a=advOf("a",r);if(a)out.push({src:"a",r,a,date:r.date,name:r.merchant||"記帳",twd:r.amount*cr,amt:fmtL(r.amount),how:"現金・記帳表"});}
+  for(const r of (S.cashSpend||[])){const a=advOf("x",r);if(a)out.push({src:"x",r,a,date:r.date,name:r.note||"現金支出",twd:r.try*cr,amt:fmtL(r.try),how:"現金・手動"});}
+  return out.sort((x,y)=>x.date<y.date?-1:x.date>y.date?1:0);
+}
+function advBtn(src,r){if(r.id==="p"||r.kind==="fee")return "";const a=advOf(src,r);
+  return `<button class="edbtn${a?" on":""}" data-adv="${src}:${esc(src==="a"?advKey(src,r).slice(2):r.id)}">${a?(a.st==="done"?"代墊・已收回":"代墊"):"設為代墊"}</button>`;}
 function inMonth(d){return month==="all"||(d&&d.slice(0,7)===month);}
 function compute(){
   const R=reconcile(),rt=rate();
   let card=0,cardL=0,pend=0,pendL=0,cash=0,cashL=0;const byCat={};
   const add=(c,v)=>{byCat[c]=(byCat[c]||0)+v;};
-  for(const r of S.stmt){if(!inMonth(r.date))continue;card+=r.twd;cardL+=r.cur==="TRY"?r.fx:(r.cur?0:r.twd/rt);add(catOf(r,"s"),r.twd);}
+  for(const r of S.stmt){if(!inMonth(r.date)||advOf("s",r))continue;card+=r.twd;cardL+=r.cur==="TRY"?r.fx:(r.cur?0:r.twd/rt);add(catOf(r,"s"),r.twd);}
   // 記帳表只記現金，刷卡看帳單，兩邊不互相比對。換匯只是把美金換成里拉，不算花費。
   //  pend＝記帳表的現金支出，cash＝手動記的現金支出
   const cr=cashRate();
-  for(const a of S.apple){if(!inMonth(a.date))continue;pend+=a.amount*cr;pendL+=a.amount;add(catOf(a,"a"),a.amount*cr);}
-  for(const c of (S.cashSpend||[])){if(!inMonth(c.date))continue;cash+=c.try*cr;cashL+=c.try;add(c.cat||"其他",c.try*cr);}
+  for(const a of S.apple){if(!inMonth(a.date)||advOf("a",a))continue;pend+=a.amount*cr;pendL+=a.amount;add(catOf(a,"a"),a.amount*cr);}
+  for(const c of (S.cashSpend||[])){if(!inMonth(c.date)||advOf("x",c))continue;cash+=c.try*cr;cashL+=c.try;add(c.cat||"其他",c.try*cr);}
   return{R,rt,cr,card,pend,cash,pendL,cashL,byCat,total:card+pend+cash,totalL:cardL+pendL+cashL};
 }
 
@@ -665,7 +685,7 @@ function renderMoney(C,ms){
 }
 function renderJourney(){
   const wrap=$("journeyWrap");if(month==="all"){wrap.hidden=true;return;}
-  const rows=S.stmt.filter(r=>inMonth(r.date)&&r.kind==="charge"&&r.twd>0);
+  const rows=S.stmt.filter(r=>inMonth(r.date)&&r.kind==="charge"&&r.twd>0&&!advOf("s",r));
   if(!rows.length){wrap.hidden=true;return;}wrap.hidden=false;
   const y=+month.slice(0,4),mo=+month.slice(5),days=new Date(y,mo,0).getDate();
   const byDay={};rows.forEach(r=>{const d=+r.date.slice(8);byDay[d]=(byDay[d]||0)+r.twd;});
@@ -766,9 +786,12 @@ function render(){
   $("stAp").textContent=S.apple.length?S.apple.length+" 筆":"尚未匯入";
   $("stCash").textContent=S.cash.length?S.cash.length+" 筆":"尚未新增";
   $("stSpend").textContent=(S.cashSpend||[]).length?S.cashSpend.length+" 筆":"尚未新增";
-  renderCash(C.rt);renderSpend(C.cr);renderBatches(C.R);
+  renderCash(C.rt);renderSpend(C.cr);
+  {const L=advList(),pend=L.filter(x=>x.a.st!=="done").reduce((t,x)=>t+x.twd,0),inM=L.filter(x=>inMonth(x.date)).reduce((t,x)=>t+x.twd,0);
+   $("advNote").hidden=!L.length;
+   $("advNote").innerHTML=L.length?`代墊${month==="all"?"":"（本期）"} ${fmtT(inM)} 不算在上面的花費裡。全部還沒收回的有 <b>${fmtT(pend)}</b>，看「代墊」分頁。`:"";}renderBatches(C.R);
   document.querySelectorAll(".tab").forEach(b=>b.setAttribute("aria-selected",b.dataset.t===tab));
-  if(tab==="recon")renderRecon(C);else if(tab==="cat")renderCat(C);else renderAll();
+  if(tab==="recon")renderRecon(C);else if(tab==="cat")renderCat(C);else if(tab==="adv")renderAdv();else renderAll();
 }
 function catSelect(src,r){if(r.kind==="fee")return "";const cur=catOf(r,src);const o=CATS.filter(c=>c!=="海外手續費"&&c!=="現金");if(!o.includes(cur))o.push(cur);
   return `<select data-ck="${src}:${esc(r.id)}" aria-label="類別">${o.map(c=>`<option${c===cur?" selected":""}>${esc(c)}</option>`).join("")}</select>`;}
@@ -808,10 +831,10 @@ document.addEventListener("click",e=>{
 function cardTag(r){return cards().length>1&&r.card?`<span class="pill p-n">${esc(r.card)}</span>`:"";}
 function itemS(r,pill,extra){
   return `<div class="item"><div class="m">${esc(merchant(r.desc))}</div><div class="a num">${fmtT(r.twd)}</div>
-  <div class="meta"><span class="num">${md(r.date)}</span>${cardTag(r)}${pill||""}${catSelect("s",r)}${edBtn("s",r.id)}</div><div class="a2 num">${r.cur?(r.cur==="TRY"?fmtL(r.fx):r.cur+" "+r.fx):""}${extra||""}</div>${edRow("s",r)}</div>`;}
+  <div class="meta"><span class="num">${md(r.date)}</span>${cardTag(r)}${pill||""}${catSelect("s",r)}${edBtn("s",r.id)}${advBtn("s",r)}</div><div class="a2 num">${r.cur?(r.cur==="TRY"?fmtL(r.fx):r.cur+" "+r.fx):""}${extra||""}</div>${edRow("s",r)}</div>`;}
 function itemA(a,pill,rt){
   return `<div class="item"><div class="m">${esc(a.merchant||"（未填備註）")}</div><div class="a num">${fmtL(a.amount)}</div>
-  <div class="meta"><span class="num">${md(a.date)}</span>${pill}${catSelect("a",a)}${edBtn("a",a.id)}</div><div class="a2 num">≈ ${fmtT(a.amount*rt)}</div>${edRow("a",a)}</div>`;}
+  <div class="meta"><span class="num">${md(a.date)}</span>${pill}${catSelect("a",a)}${edBtn("a",a.id)}${advBtn("a",a)}</div><div class="a2 num">≈ ${fmtT(a.amount*rt)}</div>${edRow("a",a)}</div>`;}
 const grp=(t,n)=>`<div class="grp"><span>${t}</span><span class="num">${n} 筆</span></div>`;
 function renderRecon(C){
   // 現金支出：記帳表＋手動記，全部按日期排；還沒到的日期標「預計」
@@ -827,9 +850,9 @@ let openCat=null;
 const shortName=d=>merchant(d).replace(/^[^/]{1,6}\//,"").replace(/\s+(ISTANBUL|ISTANB|IST\b|ANKARA|STANBUL)\b.*$/i,"").replace(/\s+(TR|US|NL|LT|SG|GB)$/,"").trim()||"（未命名）";
 function renderCat(C){
   const rt=C.rt,R=C.R,rows=[];
-  for(const r of S.stmt){if(!inMonth(r.date))continue;rows.push({date:r.date,twd:r.twd,cat:catOf(r,"s"),name:r.kind==="fee"?"國外交易服務費":shortName(r.desc)});}
-  for(const a of S.apple){if(!inMonth(a.date))continue;rows.push({date:a.date,twd:a.amount*C.cr,cat:catOf(a,"a"),name:(a.merchant||"記帳")+"（現金）"});}
-  for(const c of (S.cashSpend||[])){if(!inMonth(c.date))continue;rows.push({date:c.date,twd:c.try*C.cr,cat:c.cat||"其他",name:(c.note||"現金支出")+"（現金）"});}
+  for(const r of S.stmt){if(!inMonth(r.date)||advOf("s",r))continue;rows.push({date:r.date,twd:r.twd,cat:catOf(r,"s"),name:r.kind==="fee"?"國外交易服務費":shortName(r.desc)});}
+  for(const a of S.apple){if(!inMonth(a.date)||advOf("a",a))continue;rows.push({date:a.date,twd:a.amount*C.cr,cat:catOf(a,"a"),name:(a.merchant||"記帳")+"（現金）"});}
+  for(const c of (S.cashSpend||[])){if(!inMonth(c.date)||advOf("x",c))continue;rows.push({date:c.date,twd:c.try*C.cr,cat:c.cat||"其他",name:(c.note||"現金支出")+"（現金）"});}
   const arr=Object.entries(C.byCat).filter(([,v])=>Math.abs(v)>=0.5).sort((a,b)=>b[1]-a[1]);
   if(!arr.length){$("view").innerHTML=`<p class="empty">這段期間沒有花費。</p>`;return;}
   if(openCat&&!arr.some(([c])=>c===openCat))openCat=null;
@@ -863,8 +886,31 @@ function spendRows(){return [...(S.cashSpend||[])].filter(c=>inMonth(c.date)).so
 function itemX(c,cr,pill){
   const o=CATS.filter(c=>c!=="海外手續費"&&c!=="現金");const opts=o.includes(c.cat)?o:[...o,c.cat];
   return `<div class="item"><div class="m">${esc(c.note||"（未填項目）")}</div><div class="a num">${fmtL(c.try)}</div>
-   <div class="meta"><span class="num">${md(c.date)}</span>${pill||""}<select data-spcat="${esc(c.id)}" aria-label="類別">${opts.map(x=>`<option${x===c.cat?" selected":""}>${esc(x)}</option>`).join("")}</select><button class="edbtn" data-delspend="${esc(c.id)}">刪除</button></div><div class="a2 num">≈ ${fmtT(c.try*cr)}</div></div>`;
+   <div class="meta"><span class="num">${md(c.date)}</span>${pill||""}<select data-spcat="${esc(c.id)}" aria-label="類別">${opts.map(x=>`<option${x===c.cat?" selected":""}>${esc(x)}</option>`).join("")}</select><button class="edbtn" data-delspend="${esc(c.id)}">刪除</button>${advBtn("x",c)}</div><div class="a2 num">≈ ${fmtT(c.try*cr)}</div></div>`;
 }
+function renderAdv(){
+  const L=advList(),inM=L.filter(x=>inMonth(x.date));
+  const pend=L.filter(x=>x.a.st!=="done"),done=L.filter(x=>x.a.st==="done");
+  const sum=a=>a.reduce((t,x)=>t+x.twd,0);
+  const row=x=>`<div class="item"><div class="m">${esc(x.name)}</div><div class="a num">${x.amt}</div>
+    <div class="meta"><span class="num">${md(x.date)}</span><span class="pill p-n">${esc(x.how)}</span>${x.a.st==="done"?`<span class="pill p-ok">已收回${x.a.at?" "+md(x.a.at):""}</span>`:`<span class="pill p-warn">待收回</span>`}
+      <button class="edbtn" data-advst="${esc(advKey(x.src,x.r))}">${x.a.st==="done"?"改回待收回":"標記已收回"}</button><button class="edbtn" data-advoff="${esc(advKey(x.src,x.r))}">取消代墊</button></div>
+    <div class="a2 num">${x.src==="s"?"":"≈ "+fmtT(x.twd)}</div></div>`;
+  const P=inM.filter(x=>x.a.st!=="done"),D=inM.filter(x=>x.a.st==="done");
+  $("view").innerHTML=`<div class="grp"><span>全部待收回</span><span class="num">${fmtT(sum(pend))}（${pend.length} 筆）</span></div>`
+    +grp(month==="all"?"待收回":"本期待收回",P.length)+(P.map(row).join("")||`<p class="empty">沒有。</p>`)
+    +grp(month==="all"?"已收回":"本期已收回",D.length)+(D.map(row).join("")||`<p class="empty">沒有。</p>`)
+    +`<p class="note">在「現金支出」或「信用卡明細」的每一筆按「設為代墊」，就會出現在這裡，而且不算進你自己的花費。公司把錢還你之後按「標記已收回」。</p>`;
+}
+document.addEventListener("click",e=>{
+  const b=e.target.closest("[data-adv]");
+  if(b){const v=b.dataset.adv,i=v.indexOf(":"),src=v.slice(0,i),rest=v.slice(i+1);const k=src+":"+rest;S.adv=S.adv||{};
+    if(S.adv[k])delete S.adv[k];else S.adv[k]={st:"pending"};save("meta");render();return;}
+  const st=e.target.closest("[data-advst]");
+  if(st){const a=(S.adv||{})[st.dataset.advst];if(a){if(a.st==="done"){a.st="pending";delete a.at;}else{a.st="done";a.at=todayPlus(0);}save("meta");render();}return;}
+  const off=e.target.closest("[data-advoff]");
+  if(off){delete S.adv[off.dataset.advoff];save("meta");render();return;}
+});
 function renderSpend(cr){
   const o=CATS.filter(c=>c!=="海外手續費"&&c!=="現金");
   if(!$("xCat").options.length)$("xCat").innerHTML=o.map(c=>`<option${c==="餐費"?" selected":""}>${esc(c)}</option>`).join("");
@@ -1124,7 +1170,7 @@ try{const pd=JSON.parse(localStorage.getItem(PKEY)||"null");
 
 /* ---------- 備份匯出、匯入 ---------- */
 $("expBtn").addEventListener("click",()=>{
-  const bk={app:"外派花費對帳",version:1,exportedAt:new Date().toISOString().slice(0,10),card:{rows:S.stmt,batches:S.batches},log:{rows:S.apple},cash:{rows:S.cash,spend:S.cashSpend||[]},meta:{cats:S.cats,budget:S.budget,logFix:S.logFix||{}}};
+  const bk={app:"外派花費對帳",version:1,exportedAt:new Date().toISOString().slice(0,10),card:{rows:S.stmt,batches:S.batches},log:{rows:S.apple},cash:{rows:S.cash,spend:S.cashSpend||[]},meta:{cats:S.cats,budget:S.budget,logFix:S.logFix||{},adv:S.adv||{}}};
   const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(bk)],{type:"application/json"}));
   a.download=`expense-backup-${bk.exportedAt}.json`;document.body.append(a);a.click();a.remove();
 });
@@ -1141,7 +1187,7 @@ $("impMsg").addEventListener("click",async e=>{
   if(e.target.id==="impNo"){pendingImport=null;$("impMsg").innerHTML="";return;}
   if(e.target.id!=="impYes"||!pendingImport)return;
   const j=pendingImport;pendingImport=null;
-  S={stmt:j.card.rows,batches:j.card.batches||{},apple:(j.log&&j.log.rows)||[],cash:(j.cash&&j.cash.rows)||[],cashSpend:(j.cash&&j.cash.spend)||[],cats:(j.meta&&j.meta.cats)||{},budget:(j.meta&&j.meta.budget)||null,logFix:(j.meta&&j.meta.logFix)||{}};
+  S={stmt:j.card.rows,batches:j.card.batches||{},apple:(j.log&&j.log.rows)||[],cash:(j.cash&&j.cash.rows)||[],cashSpend:(j.cash&&j.cash.spend)||[],cats:(j.meta&&j.meta.cats)||{},budget:(j.meta&&j.meta.budget)||null,logFix:(j.meta&&j.meta.logFix)||{},adv:(j.meta&&j.meta.adv)||{}};
   fixLogDates();applyLogFix();fixStmtDates();
   render();const r=await save("card","log","cash","meta");
   $("impMsg").innerHTML=r.ok?`<div class="msg ok">已匯入並同步到 Firebase。</div>`:`<div class="msg info">已匯入到這台裝置。${r.code==="offline"?"登入後會自動同步到 Firebase。":"同步失敗（"+esc(r.code)+"）。"}</div>`;
@@ -1222,7 +1268,8 @@ $("xAdd").addEventListener("click",()=>{
   const date=$("xDate").value,t=parseFloat($("xTry").value);
   if(!date||!(t>0)){$("xTry").focus();return;}
   if(!S.cashSpend)S.cashSpend=[];
-  S.cashSpend.push({id:uid("x"),date,try:t,note:$("xNote").value.trim(),cat:$("xCat").value});
+  const nid=uid("x");S.cashSpend.push({id:nid,date,try:t,note:$("xNote").value.trim(),cat:$("xCat").value});
+  if($("xAdv").checked){S.adv=S.adv||{};S.adv["x:"+nid]={st:"pending"};$("xAdv").checked=false;save("meta");}
   save("cash");["xTry","xNote"].forEach(id=>$(id).value="");$("xTry").focus();render();
 });
 $("xTry").addEventListener("keydown",e=>{if(e.key==="Enter")$("xAdd").click();});
